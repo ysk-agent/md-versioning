@@ -1,0 +1,21 @@
+[project]
+name = "md-versioning"
+version = "0.1.0"
+description = "Document-native versioning for Markdown files with YAML frontmatter"
+requires-python = ">=3.11"
+dependencies = [
+    "blake3",
+    "pyyaml",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+[build-system]
+requires = ["uv_build>=0.9"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
