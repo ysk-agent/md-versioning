@@ -23,9 +23,35 @@ from .errors import (
     UnknownDocumentError,
 )
 from .index import Index
-from .store import Store, body_hash
+from .store import Store, body_hash, valid_file_id
 
 _TAG_FORBIDDEN = set("#,[]")
+_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?Z$")
+
+
+def _clean_words(values, check) -> list:
+    """Keep only string entries that pass the given validator."""
+    if not isinstance(values, list):
+        return []
+    out = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        try:
+            check(value)
+        except Exception:
+            continue
+        if value not in out:
+            out.append(value)
+    return out
+
+
+def _safe_version(value) -> int | None:
+    try:
+        version = int(value)
+    except (TypeError, ValueError):
+        return None
+    return version if version >= 1 else None
 
 
 def _now() -> str:
@@ -131,14 +157,16 @@ class Engine:
                 continue
             meta, body = frontmatter.parse(path.read_text(encoding="utf-8"))
             rel = path.relative_to(self.root)
+            raw_id = meta.get("file_id")
             docs.append(
                 Document(
                     directory=str(rel.parent) if str(rel.parent) != "." else "",
                     filename=rel.name,
-                    file_id=str(meta.get("file_id") or ""),
-                    version=int(meta.get("version") or 1),
-                    tags=list(meta.get("tags") or []),
-                    aliases=list(meta.get("aliases") or []),
+                    file_id=raw_id if valid_file_id(raw_id) else "",
+                    version=_safe_version(meta.get("version")) or 1,
+                    tags=_clean_words(meta.get("tags"), Engine._check_tag),
+                    aliases=_clean_words(meta.get("aliases"),
+                                         Engine._check_filename),
                     updated=str(meta.get("updated") or ""),
                     body=body,
                 )
@@ -161,17 +189,26 @@ class Engine:
             return None
         meta, body = frontmatter.parse(path.read_text(encoding="utf-8"))
         changed = False
-        if not meta.get("file_id"):
+        # Frontmatter comes from disk and may be hand-crafted. Every field
+        # is validated before the engine trusts or re-emits it: an unsafe
+        # file_id could otherwise escape the log directory, and a crafted
+        # tag or timestamp could inject extra frontmatter lines.
+        if not valid_file_id(meta.get("file_id")):
             meta["file_id"] = self._new_file_id(filename)
             changed = True
-        if not meta.get("version"):
+        version = _safe_version(meta.get("version"))
+        if version is None:
             meta["version"] = 1
             changed = True
-        for key in ("tags", "aliases"):
-            if not isinstance(meta.get(key), list):
-                meta[key] = []
+        else:
+            meta["version"] = version
+        for key, check in (("tags", Engine._check_tag),
+                           ("aliases", Engine._check_filename)):
+            cleaned = _clean_words(meta.get(key), check)
+            if cleaned != meta.get(key):
+                meta[key] = cleaned
                 changed = True
-        if not meta.get("updated"):
+        if not _TS_RE.match(str(meta.get("updated") or "")):
             meta["updated"] = _now()
             changed = True
         if changed:
